@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sovereign AI Workbench</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="mark"></span>
+    <span>Sovereign AI Workbench</span>
+  </div>
+  <div class="bar-stats">
+    <div class="stat"><span class="k">Endpoint</span><span class="v" id="endpoint">checking…</span></div>
+    <div class="stat"><span class="k">Models loaded</span><span class="v" id="models">—</span></div>
+    <div class="stat egress" id="egress-stat">
+      <span class="k">External calls</span><span class="v" id="egress">0</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="chat">
+    <div id="log" class="log">
+      <div class="msg system">
+        <p>Air-gapped. Every model call, tool call and file write is recorded in the
+        audit log, and any outbound connection is blocked and named.</p>
+        <p>Try: <em>summarise the safety clauses in the attached SOP</em>, or
+        <em>write a Python function for pipe wall thickness and test it</em>.</p>
+      </div>
+    </div>
+    <form id="composer" class="composer">
+      <label class="attach" title="Attach a document">
+        <input type="file" id="file" hidden>
+        <span>+</span>
+      </label>
+      <textarea id="input" rows="1" placeholder="Ask the workbench…"></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+    <div id="attached" class="attached"></div>
+  </section>
+
+  <aside class="trace">
+    <h2>Run trace</h2>
+    <div id="trace" class="trace-list">
+      <p class="empty">Steps appear here as the agent works.</p>
+    </div>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

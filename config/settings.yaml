@@ -1,0 +1,22 @@
+# Where things are. This is the only file that changes when the workbench
+# moves from a laptop to a customer's GPU server.
+inference:
+  base_url: http://127.0.0.1:8000/v1
+  api_key: local
+  timeout_seconds: 180
+
+embeddings:
+  base_url: http://127.0.0.1:11434/v1
+  api_key: local
+  model: bge-m3
+
+service:
+  host: 127.0.0.1
+  port: 8080
+
+paths:
+  workspace: ./workspace
+  knowledge_base: ./kb_data
+  templates: ./templates
+  models: ./models
+  audit: ./audit

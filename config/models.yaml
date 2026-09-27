@@ -1,0 +1,38 @@
+# The model registry. Adding a newly released open-weight model is an edit
+# here plus pulling the weights -- never a code change.
+#
+#   id              stable name used in logs and traces
+#   endpoint_model  the exact id the /v1 server reports in GET /v1/models
+#   capabilities    what this model is allowed to be routed for
+#   context_window  tokens; the router will not send more than this
+#   speed_class     fast | medium | slow  (tie-breaker, fastest wins)
+#   default         exactly one model should set this
+
+models:
+  - id: qwen3-coder-30b
+    endpoint_model: Qwen3-Coder-30B-A3B-MLX-4bit
+    capabilities: [code_generation, code_repair, structured_output]
+    context_window: 131072
+    speed_class: medium
+    notes: preferred for anything that will be executed
+
+  - id: gemma4-26b
+    endpoint_model: gemma4-26b-a4b-mlx
+    capabilities:
+      [document_drafting, summarisation, retrieval_qa, calculation, general]
+    context_window: 131072
+    speed_class: medium
+    default: true
+
+  - id: qwen3-vl-8b
+    endpoint_model: Qwen3-VL-8B-Instruct-4bit
+    capabilities: [visual_understanding, ocr_assist]
+    context_window: 32768
+    speed_class: fast
+
+  - id: qwen3-4b
+    endpoint_model: Qwen3-4B-Instruct-4bit
+    capabilities: [classification, general]
+    context_window: 32768
+    speed_class: fast
+    notes: used by the classifier itself; keep something small here

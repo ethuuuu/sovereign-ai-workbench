@@ -1,0 +1,23 @@
+# Never commit weights, per-session data or audit logs
+models/
+workspace/
+kb_data/
+audit/
+*.gguf
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Secrets -- there should be none, but make it structural
+.env
+*.key
+*.pem
+
+# OS
+.DS_Store

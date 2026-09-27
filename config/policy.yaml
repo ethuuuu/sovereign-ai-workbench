@@ -1,0 +1,28 @@
+# What is allowed. A security officer should be able to read this file
+# and know exactly what the workbench can and cannot do.
+
+egress:
+  mode: deny_all_except_loopback
+  allowed_hosts: ["127.0.0.1", "localhost", "::1"]
+  on_violation: block_and_log
+
+sandbox:
+  timeout_seconds: 30
+  max_memory_mb: 2048
+  max_output_bytes: 1048576
+  network: none
+
+files:
+  roots: [./workspace, ./kb_data]
+  deny_delete: true
+  max_read_bytes: 4194304
+
+audit:
+  enabled: true
+  retain_days: 365
+
+agent:
+  max_steps: 12
+  max_repair_attempts: 3
+  compress_at_context_fraction: 0.6
+  tool_result_inline_limit: 4000
