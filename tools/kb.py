@@ -22,7 +22,7 @@ from tools.base import REGISTRY, prop
 
 def is_indexed() -> bool:
     root = resolve_path("knowledge_base")
-    return root.exists() and any(root.iterdir())
+    return root.is_dir() and any(root.glob("*/chunks.jsonl"))
 
 
 @REGISTRY.register(
@@ -44,19 +44,26 @@ def kb_search(args: dict) -> str:
         audit.write("kb_search_unindexed", {"query": query})
         return (
             "The knowledge base has not been indexed yet. Run:\n"
-            "  python -m kb.ingest --source /path/to/manuals --collection sop\n"
+            "  python3.14t -m kb.ingest --source /path/to/manuals "
+            "--collection sop\n"
             "Answer from the documents in this conversation instead, and say "
             "plainly that no organisational source was available."
         )
 
-    from kb.retrieve import search  # imported lazily: chromadb is heavy
+    from kb.retrieve import collections, search
 
-    hits = search(query, top_k=top_k)
+    names = collections()
+    hits: list = []
+    for name in names:
+        hits.extend(search(query, top_k=top_k, collection_name=name))
+    hits = sorted(hits, key=lambda h: -h["score"])[:top_k]
     audit.write("kb_search", {"query": query, "hits": len(hits)})
     if not hits:
         return "No matching passages."
 
     return "\n\n".join(
-        f"[{h['id']}] {h['source']} p.{h['page']} ({h['score']:.3f})\n{h['text']}"
+        f"[{h['id']}] {h['source']} p.{h['page']}"
+        + (f" - {h['section']}" if h.get("section") else "")
+        + f" (score {h['score']:.2f})\n{h['text']}"
         for h in hits
     )

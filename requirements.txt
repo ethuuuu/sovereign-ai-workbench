@@ -5,10 +5,12 @@ openai>=1.54
 pydantic>=2.9
 PyYAML>=6.0
 
-# Knowledge base (phase 2)
-chromadb>=0.5
-rank-bm25>=0.2.2
+# Knowledge base
+# BM25 is implemented in kb/retrieve.py rather than pulled in: no extra
+# dependency for an air-gapped install, and no C extension that could
+# re-enable the GIL under a free-threaded interpreter (see README).
 pdfplumber>=0.11
+chromadb>=0.5          # phase 2, dense vectors only
 
 # Multimodal ingest (phase 2)
 pytesseract>=0.3.13
@@ -22,3 +24,7 @@ python-pptx>=1.0
 
 # Dev
 pytest>=8.3
+
+# Optional: run `python -m kb.ingest` on CPython 3.14t (free-threaded) for a
+# near-linear speed-up on large corpora. Install it in a venv WITHOUT
+# python-docx -- lxml re-enables the GIL process-wide. See README.

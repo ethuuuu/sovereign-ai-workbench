@@ -53,6 +53,17 @@ def test_no_network_imports_outside_the_client() -> None:
     )
 
 
+# XML namespace URIs are identifiers, not endpoints: they are compared as
+# strings and never fetched. The OOXML ones appear in kb/chunking.py, which
+# reads .docx with the stdlib precisely so it does not have to import lxml.
+NAMESPACE_HOSTS = (
+    "schemas.openxmlformats.org",
+    "schemas.microsoft.com",
+    "www.w3.org",
+    "purl.org",
+)
+
+
 def test_no_hardcoded_external_urls() -> None:
     pattern = re.compile(r"https?://(?!127\.0\.0\.1|localhost)[\w.-]+", re.IGNORECASE)
     offenders = []
@@ -61,5 +72,8 @@ def test_no_hardcoded_external_urls() -> None:
         if relative in EXEMPT:
             continue
         for match in pattern.finditer(path.read_text(encoding="utf-8")):
-            offenders.append(f"{relative}: {match.group(0)}")
+            url = match.group(0)
+            if any(host in url for host in NAMESPACE_HOSTS):
+                continue
+            offenders.append(f"{relative}: {url}")
     assert not offenders, "External URLs found in source:\n" + "\n".join(offenders)

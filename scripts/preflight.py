@@ -20,6 +20,12 @@ def main() -> int:
     failures = 0
     print("Sovereign AI Workbench - preflight\n" + "=" * 46)
 
+    from agent.parallel import gil_state
+
+    state = gil_state()
+    mark = TICK if (state.scales or not state.free_threaded_build) else WARN
+    print(f"[{mark}] runtime:  {state.describe()}")
+
     registry = registry_module.load()
     print(f"[{TICK}] registry: {len(registry.entries)} models declared")
 

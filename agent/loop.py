@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent import context, planner
+from agent import context, parallel, planner
 from agent.trace import Trace
 from agent.verifier import verify
 from config import policy
@@ -31,6 +31,15 @@ from inference.client import chat
 from router import classify, select
 from router.registry import Registry
 from tools.base import ToolRegistry
+
+# Tools with no side effects. When a model emits several of these in one
+# turn they are run concurrently: each one blocks on a file read, a socket
+# or a child process, all of which release the GIL, so this overlaps on a
+# standard build too. Free threading is not what makes it work.
+READ_ONLY_TOOLS = frozenset(
+    {"read_file", "list_dir", "search_files", "kb_search", "read_more",
+     "ingest_document", "describe_image"}
+)
 
 # Oversized tool results are stored here and fetched in slices by read_more,
 # instead of being silently truncated as the prototype did.
@@ -184,18 +193,40 @@ def run(
             answer = message.get("content") or ""
             break
 
+        prepared = []
         for call in calls:
             name = call["function"]["name"]
             try:
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
+            prepared.append((call, name, args))
+
+        # Several independent reads in one turn overlap; anything that
+        # writes, executes or finishes stays strictly sequential, because
+        # order is part of its meaning.
+        concurrent = (
+            len(prepared) > 1
+            and all(name in READ_ONLY_TOOLS for _, name, _ in prepared)
+        )
+        if concurrent:
+            trace.emit("parallel_tools", count=len(prepared),
+                       tools=[n for _, n, _ in prepared])
+            outputs = parallel.map_io(
+                lambda item: _invoke(tools, item[1], item[2]), prepared
+            )
+        else:
+            outputs = None
+
+        for index, (call, name, args) in enumerate(prepared):
 
             signature = state.signature(name, args)
             state.call_counts[signature] = state.call_counts.get(signature, 0) + 1
             repeats = state.call_counts[signature]
 
-            if repeats >= 3:
+            if outputs is not None:
+                output = outputs[index]
+            elif repeats >= 3:
                 output = (
                     f"REFUSED: '{name}' has been called three times with the "
                     "same arguments and returned the same thing. Try a "
