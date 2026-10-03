@@ -11,9 +11,15 @@ organisation's letterhead, fonts and numbering. Three reasons:
     model than well-formatted long prose, and it is checkable before
     rendering
 
-Every generated file is re-opened and verified after writing: it parses,
-required sections exist, no placeholder survives. A corrupt download in
-front of a jury is an avoidable failure.
+NOTHING IN THIS MODULE IMPORTS python-docx, python-pptx OR openpyxl.
+All three reach lxml, which requires the GIL, and enabling the GIL cannot
+be undone for the life of a process. The actual writing happens in
+scripts/deliver_worker.py, dispatched through tools/isolated.py, so the
+agent keeps free threading. See README, 'Free-threaded Python'.
+
+Every generated file is re-opened and verified inside that worker before
+it is reported: it parses, required sections exist, no placeholder
+survives. A corrupt download in front of a jury is an avoidable failure.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from pathlib import Path
 from config import resolve_path
 from guard import audit
 from tools.base import REGISTRY, prop
+from tools.isolated import run_job
 
 APPROVAL_NOTE_SCHEMA = {
     "reference": "string, e.g. INS/2026/014",
@@ -49,6 +56,26 @@ def _output_dir() -> Path:
     return path
 
 
+def _dispatch(kind: str, filename: str, title: str, raw_json: str, field: str) -> str:
+    try:
+        content = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        return f"{field} is not valid JSON ({exc}). Fix it and retry."
+
+    path = _output_dir() / Path(filename).name
+    result = run_job(kind, path, title, content)
+
+    if not result.get("ok"):
+        return f"Could not write {path.name}: {result.get('error', 'unknown error')}"
+
+    audit.write("deliverable", {"kind": kind, "path": str(path)})
+    where = "in an isolated worker" if result.get("isolated") else "in process"
+    return (
+        f"Wrote and verified {path.name} ({result.get('bytes', 0)} bytes) "
+        f"in {path.parent} [{where}]"
+    )
+
+
 @REGISTRY.register(
     "make_docx",
     "Write a Word document from structured content. For an approval note "
@@ -61,85 +88,18 @@ def _output_dir() -> Path:
     ["filename", "title", "content_json"],
 )
 def make_docx(args: dict) -> str:
-    try:
-        from docx import Document
-    except ImportError:
-        return "python-docx is not installed. Run: pip install python-docx"
-
-    try:
-        content = json.loads(args["content_json"])
-    except json.JSONDecodeError as exc:
-        return f"content_json is not valid JSON ({exc}). Fix it and retry."
-
-    path = _output_dir() / Path(args["filename"]).name
-    document = Document()
-    document.add_heading(args["title"], level=0)
-
-    # TODO(phase 2): load templates/approval_note.docx instead of a blank
-    # Document, so the organisation's letterhead and numbering carry over.
-
-    meta = [
-        ("Reference", content.get("reference", "")),
-        ("Date", content.get("date", date.today().isoformat())),
-        ("Subject", content.get("subject", "")),
-    ]
-    for label, value in meta:
-        if value:
-            document.add_paragraph(f"{label}: {value}")
-
-    if content.get("background"):
-        document.add_heading("Background", level=1)
-        document.add_paragraph(str(content["background"]))
-
-    observations = content.get("observations") or []
-    if observations:
-        document.add_heading("Observations", level=1)
-        table = document.add_table(rows=1, cols=3)
-        table.style = "Table Grid"
-        header = table.rows[0].cells
-        header[0].text, header[1].text, header[2].text = (
-            "Finding",
-            "Severity",
-            "Source",
+    content = dict(json.loads(args["content_json"])) if _is_json(
+        args["content_json"]
+    ) else None
+    if content is not None:
+        content.setdefault("date", date.today().isoformat())
+        return _dispatch(
+            "docx", args["filename"], args["title"], json.dumps(content),
+            "content_json",
         )
-        for item in observations:
-            row = table.add_row().cells
-            row[0].text = str(item.get("finding", ""))
-            row[1].text = str(item.get("severity", ""))
-            row[2].text = str(item.get("source", ""))
-
-    if content.get("recommendation"):
-        document.add_heading("Recommendation", level=1)
-        document.add_paragraph(str(content["recommendation"]))
-
-    document.add_paragraph("")
-    document.add_paragraph(f"Prepared by: {content.get('prepared_by', '')}")
-    document.add_paragraph("Approved by: ______________________")
-
-    document.save(path)
-
-    problem = _verify_docx(path)
-    if problem:
-        return f"Wrote {path.name} but verification failed: {problem}"
-
-    audit.write("deliverable", {"kind": "docx", "path": str(path)})
-    return f"Wrote and verified {path.name} ({path.stat().st_size} bytes) in {path.parent}"
-
-
-def _verify_docx(path: Path) -> str | None:
-    """Re-open the file we just wrote and check it is usable."""
-    try:
-        from docx import Document
-
-        document = Document(path)
-    except Exception as exc:  # noqa: BLE001
-        return f"the file does not re-open ({exc})"
-
-    text = "\n".join(p.text for p in document.paragraphs)
-    for placeholder in ("TODO", "[insert", "lorem ipsum", "XXXX"):
-        if placeholder.lower() in text.lower():
-            return f"placeholder text '{placeholder}' survived into the document"
-    return None
+    return _dispatch(
+        "docx", args["filename"], args["title"], args["content_json"], "content_json"
+    )
 
 
 @REGISTRY.register(
@@ -157,31 +117,7 @@ def _verify_docx(path: Path) -> str | None:
     ["filename", "sheet_json"],
 )
 def make_xlsx(args: dict) -> str:
-    try:
-        from openpyxl import Workbook
-    except ImportError:
-        return "openpyxl is not installed. Run: pip install openpyxl"
-
-    try:
-        payload = json.loads(args["sheet_json"])
-    except json.JSONDecodeError as exc:
-        return f"sheet_json is not valid JSON ({exc}). Fix it and retry."
-
-    path = _output_dir() / Path(args["filename"]).name
-    workbook = Workbook()
-    workbook.remove(workbook.active)
-
-    for sheet in payload.get("sheets", []):
-        worksheet = workbook.create_sheet(title=str(sheet.get("name", "Sheet"))[:31])
-        for row in sheet.get("rows", []):
-            worksheet.append(row)
-
-    if not workbook.sheetnames:
-        return "sheet_json contained no sheets."
-
-    workbook.save(path)
-    audit.write("deliverable", {"kind": "xlsx", "path": str(path)})
-    return f"Wrote {path.name} ({path.stat().st_size} bytes) in {path.parent}"
+    return _dispatch("xlsx", args["filename"], "", args["sheet_json"], "sheet_json")
 
 
 @REGISTRY.register(
@@ -194,32 +130,7 @@ def make_xlsx(args: dict) -> str:
     ["filename", "slides_json"],
 )
 def make_pptx(args: dict) -> str:
-    try:
-        from pptx import Presentation
-    except ImportError:
-        return "python-pptx is not installed. Run: pip install python-pptx"
-
-    try:
-        payload = json.loads(args["slides_json"])
-    except json.JSONDecodeError as exc:
-        return f"slides_json is not valid JSON ({exc}). Fix it and retry."
-
-    path = _output_dir() / Path(args["filename"]).name
-    presentation = Presentation()
-    layout = presentation.slide_layouts[1]
-
-    for slide_spec in payload.get("slides", []):
-        slide = presentation.slides.add_slide(layout)
-        slide.shapes.title.text = str(slide_spec.get("title", ""))
-        body = slide.placeholders[1].text_frame
-        bullets = slide_spec.get("bullets") or []
-        for index, bullet in enumerate(bullets):
-            paragraph = body.paragraphs[0] if index == 0 else body.add_paragraph()
-            paragraph.text = str(bullet)
-
-    presentation.save(path)
-    audit.write("deliverable", {"kind": "pptx", "path": str(path)})
-    return f"Wrote {path.name} ({path.stat().st_size} bytes) in {path.parent}"
+    return _dispatch("pptx", args["filename"], "", args["slides_json"], "slides_json")
 
 
 @REGISTRY.register(
@@ -235,3 +146,10 @@ def make_pptx(args: dict) -> str:
 def finish(args: dict) -> str:
     audit.write("finish", {"summary": args.get("summary", "")})
     return "FINISHED"
+
+
+def _is_json(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except json.JSONDecodeError:
+        return False

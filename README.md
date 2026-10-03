@@ -171,14 +171,57 @@ must not **contain** lxml. `tests/test_parallel.py` asserts the ingest
 import graph stays clean, and `agent/parallel.py:gil_culprits()` names the
 offending module instead of leaving you to guess.
 
+### Enabling the GIL cannot be undone
+
+This is the constraint the whole design turns on. `sys._is_gil_enabled()`
+is read-only; the C API exports `PyUnstable_Module_SetGIL`, which only
+ever enables. Unloading the module does not release it:
+
+```
+>>> sys._is_gil_enabled()                       False
+>>> import lxml.etree
+>>> sys._is_gil_enabled()                       True
+>>> del sys.modules['lxml.etree']; gc.collect()
+>>> sys._is_gil_enabled()                       True    # for the life of the process
+```
+
+So one call to `make_docx` would cost the agent its free threading for the
+rest of the session -- every later ingest and every later BM25 query back
+under the GIL.
+
+Since the latch is per process, the answer is a process boundary.
+`scripts/deliver_worker.py` is the only code permitted to import
+python-docx, python-pptx or openpyxl. It takes one job on stdin, writes
+and verifies the file, prints JSON and exits. The GIL is enabled inside it
+and dies with it.
+
+```
+DESIGN A -- write in-process          DESIGN B -- short-lived worker
+  agent start        GIL: False         agent start        GIL: False
+  after make_docx    GIL: True          worker (188 ms)    GIL: True
+  next ingest task   GIL: True          after make_docx    GIL: False
+  free threading lost for good          next ingest task   GIL: False
+```
+
+Measured cost of the worker, writing a real 40-paragraph approval note:
+18 ms to start an interpreter, 120 ms with python-docx imported, 159 ms
+including the write and the re-open check. A sixth of a second, once per
+document.
+
+And it only forks when that buys something: on a standard interpreter
+there is no free threading to protect, so `tools/isolated.py` runs the
+writer in-process and pays nothing. `should_isolate()` is the one place
+that decides.
+
 ### The design splits along that line
 
 - **`python -m kb.ingest`** is its own entry point and never imports
   python-docx. `.docx` sources are unzipped with the stdlib in
   `kb/chunking.py` instead. Free threading survives, and ingest scales.
-- **The service** imports python-docx because it writes Word files, so it
-  runs with the GIL on. That is fine — the service is I/O-bound on the
-  model server, so it had nothing to gain.
+- **The service** never imports a writer either: `make_docx`, `make_xlsx`
+  and `make_pptx` dispatch to the worker through `tools/isolated.py`. The
+  whole agent process stays free-threadable, and
+  `tests/test_parallel.py` fails the build if any import creeps back in.
 
 `scripts/preflight.py` prints which of the three states you are in, and
 `agent/parallel.py:gil_state()` is the single place that decides.

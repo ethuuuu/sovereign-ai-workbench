@@ -82,6 +82,50 @@ def test_ingest_import_graph_stays_free_of_lxml() -> None:
     )
 
 
+def _import_graph(statement: str) -> set[str]:
+    """Which GIL-holding modules a given import pulls in. Subprocess, so it
+    cannot pass by accident because of what this test file already loaded."""
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys; sys.path.insert(0, %r); %s; "
+        "print(','.join(sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'lxml','docx','pptx','openpyxl'})))" % (str(root), statement)
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=root
+    )
+    assert out.returncode == 0, out.stderr
+    return {m for m in out.stdout.strip().split(",") if m}
+
+
+def test_loading_every_agent_tool_pulls_in_no_gil_holder() -> None:
+    """The agent process must stay free-threadable even with make_docx
+    registered. The writers live in scripts/deliver_worker.py instead."""
+    pulled = _import_graph("from tools.base import load_all; load_all()")
+    assert not pulled, f"the agent process would lose free threading to: {pulled}"
+
+
+def test_the_worker_is_the_only_place_the_writers_are_imported() -> None:
+    root = Path(__file__).resolve().parent.parent
+    worker = (root / "scripts" / "deliver_worker.py").read_text()
+    assert "from docx import" in worker and "from pptx import" in worker
+
+    for module in ("tools/deliver.py", "tools/isolated.py", "agent/loop.py",
+                   "service/app.py"):
+        source = (root / module).read_text()
+        for banned in ("import docx", "from docx", "import pptx", "from pptx",
+                       "import openpyxl", "from openpyxl", "import lxml"):
+            assert banned not in source, f"{module} imports {banned}"
+
+
+def test_isolation_only_happens_when_it_buys_something() -> None:
+    from tools.isolated import should_isolate
+
+    assert should_isolate() == parallel.gil_state().scales
+
+
 def test_known_gil_holders_are_documented() -> None:
     for name, advice in parallel.KNOWN_GIL_HOLDERS.items():
         assert name and advice
