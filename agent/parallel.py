@@ -63,12 +63,13 @@ class GilState:
                 "costs nothing for I/O-bound work."
             )
         if self.gil_currently_enabled:
+            blamed = ", ".join(gil_culprits()[:4]) or "an unidentified module"
             return (
                 f"CPython {self.version} free-threaded build, but the GIL was "
-                "RE-ENABLED at runtime -- a C extension in this process has "
-                "not declared itself safe without it (lxml, via python-docx, "
-                "is the usual one here). No parallel speed-up, and you are "
-                "paying the free-threaded single-thread overhead for nothing."
+                f"RE-ENABLED at runtime by: {blamed}. No parallel speed-up, "
+                "and you are paying the free-threaded single-thread overhead "
+                "for nothing. Rebuilding that module will not fix it -- see "
+                "README, 'Why rebuilding lxml does not help'."
             )
         return (
             f"CPython {self.version} free-threaded, GIL off. CPU-bound Python "
@@ -83,6 +84,43 @@ def gil_state() -> GilState:
         version=".".join(str(p) for p in sys.version_info[:3]),
         cpu_count=os.cpu_count() or 1,
     )
+
+
+# Extension modules known to require the GIL, with what to do instead.
+# Rebuilding these does not help: whether an extension needs the GIL is a
+# declaration in its source (Py_mod_gil / PyUnstable_Module_SetGIL), not a
+# property of how it was compiled. lxml already ships a cp314t wheel and
+# calls PyUnstable_Module_SetGIL deliberately -- it is telling the truth
+# about libxml2's global state, not lagging behind.
+KNOWN_GIL_HOLDERS = {
+    "lxml.etree": (
+        "python-docx and python-pptx depend on it, and openpyxl uses it "
+        "opportunistically whenever it is installed. Keep all three out of "
+        "the ingest environment."
+    ),
+}
+
+
+def gil_culprits() -> list[str]:
+    """Which loaded extension modules most likely turned the GIL back on.
+
+    Only meaningful on a free-threaded build where the GIL is on. Returns
+    known offenders first, then any other loaded extension module, so a
+    new one can be identified without guesswork.
+    """
+    state = gil_state()
+    if not state.free_threaded_build or not state.gil_currently_enabled:
+        return []
+
+    known = [name for name in KNOWN_GIL_HOLDERS if name in sys.modules]
+    others = []
+    for name, module in list(sys.modules.items()):
+        if name in known or "." in name and name.rsplit(".", 1)[0] in known:
+            continue
+        origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        if origin and origin.endswith((".so", ".pyd", ".dylib")):
+            others.append(name)
+    return known + sorted(set(others))
 
 
 def cpu_workers(requested: int | None = None) -> int:

@@ -6,6 +6,7 @@ the project may REQUIRE free threading; it only exploits it when present.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from agent import parallel
@@ -53,6 +54,37 @@ def test_ingest_never_imports_python_docx() -> None:
         source = (Path(__file__).resolve().parent.parent / module).read_text()
         assert "import docx" not in source
         assert "from docx" not in source
+
+
+def test_ingest_import_graph_stays_free_of_lxml() -> None:
+    """The whole point of kb/chunking.py reading .docx with the stdlib.
+
+    openpyxl is the subtle one: it is lxml-free until lxml happens to be
+    installed, at which point it uses it and the GIL comes back on. So the
+    ingest environment must not contain lxml at all.
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys; sys.path.insert(0, %r);"
+        "import kb.ingest, kb.chunking, kb.retrieve;"
+        "bad=[m for m in sys.modules if m.startswith('lxml') or m=='docx' "
+        "or m=='pptx' or m=='openpyxl'];"
+        "print(','.join(sorted(bad)))" % str(root)
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=root
+    )
+    assert out.returncode == 0, out.stderr
+    assert not out.stdout.strip(), (
+        f"ingest pulled in GIL-holding modules: {out.stdout.strip()}"
+    )
+
+
+def test_known_gil_holders_are_documented() -> None:
+    for name, advice in parallel.KNOWN_GIL_HOLDERS.items():
+        assert name and advice
 
 
 def test_chunking_splits_on_clauses_and_keeps_provenance() -> None:

@@ -125,7 +125,53 @@ the GIL.
 GIL on: True
 ```
 
-So the design splits along that line:
+### Why rebuilding lxml does not help
+
+The obvious instinct is to compile the unsupported extensions yourself
+against 3.14t. It does not work, and the reason is worth knowing.
+
+Whether an extension needs the GIL is a **declaration in its source**
+(`Py_mod_gil = Py_MOD_GIL_NOT_USED`, or `PyUnstable_Module_SetGIL`), not a
+property of how it was built. Two C extensions, identical but for one
+line, both compiled fresh against 3.14t:
+
+```
+import undeclared   ->  RuntimeWarning: the GIL has been enabled ...
+                        GIL enabled: True
+import declared     ->  GIL enabled: False      # the only difference:
+                        #   {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+```
+
+A rebuild of unchanged source produces an unchanged declaration. And lxml
+is not merely lagging: it already ships a real `cp314t` wheel
+(`etree.cpython-314t-*.so`) that calls `PyUnstable_Module_SetGIL`
+deliberately. The maintainers are stating that libxml2's global state —
+error handlers, entity loaders, memory hooks — is not safe without the
+GIL. Patching the declaration in would not make that false, it would just
+stop the interpreter protecting you, and the failure mode is memory
+corruption rather than a clean exception.
+
+If you did want it off anyway, a rebuild is not even the cheapest route:
+`PYTHON_GIL=0` or `-Xgil=0` overrides the auto-enable at runtime with no
+compilation at all, and exactly the same risk. Neither is appropriate in a
+system whose selling point is auditability.
+
+### One trap inside the trap
+
+`openpyxl` is lxml-free *until lxml happens to be installed*, at which
+point it uses it opportunistically and the GIL comes back on:
+
+| Environment | `import openpyxl` |
+| --- | --- |
+| lxml not installed | GIL stays off, writes .xlsx with formulas fine |
+| lxml installed (for python-docx) | GIL re-enabled |
+
+So it is not enough to avoid importing python-docx; the ingest environment
+must not **contain** lxml. `tests/test_parallel.py` asserts the ingest
+import graph stays clean, and `agent/parallel.py:gil_culprits()` names the
+offending module instead of leaving you to guess.
+
+### The design splits along that line
 
 - **`python -m kb.ingest`** is its own entry point and never imports
   python-docx. `.docx` sources are unzipped with the stdlib in
@@ -142,7 +188,9 @@ So the design splits along that line:
 ```bash
 uv python install 3.14t
 uv venv --python 3.14t .venv-ingest && source .venv-ingest/bin/activate
-pip install pdfplumber PyYAML          # note: no python-docx in this venv
+pip install pdfplumber PyYAML
+# Deliberately NOT installed here: python-docx, python-pptx, lxml.
+# Installing lxml also makes openpyxl re-enable the GIL. See above.
 python -m kb.ingest --source /data/sop --collection sop
 ```
 
